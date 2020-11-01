@@ -1,5 +1,5 @@
 ---
-title: "Linux内核源码学习——bootsect"
+title: "Linux内核源码学习——bootsect.s"
 subtitle: "Linux内核源码学习"
 layout: post
 author: "Veronica"

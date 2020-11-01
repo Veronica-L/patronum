@@ -107,5 +107,65 @@ end_move:  ! ①加载中断描述符表和全局描述符表
 	mov	al,#0xDF		! A20 on
 	out	#0x60,al
 	call	empty_8042  ! 测试：若输入缓冲器为空，则表示A20线已选通
+	
+
+! 等待输入缓冲器为空
+empty_8042:
+	.word	0x00eb,0x00eb  !跳转到下一句，为了延时
+	in	al,#0x64	! 8042 status port 读端口0x64到al-就是读8042的状态寄存器，（一个8bit的只读寄存器），bit_1为1时表示输入缓冲器满，为0时表示输入缓冲器空。要向8042写命令（通过0x64端口写入），必须当输入缓冲器为空时才可以。
+	test	al,#2		! is input buffer full? 检测bit_1,如果为1，则跳转到empty_8042标号处继续检测，直到bit_1为0才返回
+	jnz	empty_8042	! yes - loop
+	ret
 ```
 
+(4)建立保护模式下的中断机制：对可编程中断控制器8259A进行重新编程
+
+```assembly
+! ----ICW1
+	mov	al,#0x11		! initialization sequence 
+	out	#0x20,al		! send it to 8259A-1 ICW1主片端口地址0x20
+	.word	0x00eb,0x00eb		! jmp $+2, jmp $+2 提供 14~20 个 CPU 时钟周期的延迟时间
+	out	#0xA0,al		! and to 8259A-2 ICW2,从片端口地址0xA0
+	.word	0x00eb,0x00eb
+	! ----ICW2
+	mov	al,#0x20		! start of hardware int's (0x20) 起始中断号0x20
+	out	#0x21,al
+	.word	0x00eb,0x00eb
+	mov	al,#0x28		! start of hardware int's 2 (0x28) 起始中断号0x28
+	out	#0xA1,al
+	.word	0x00eb,0x00eb
+	! ----ICW3
+	mov	al,#0x04		! 8259-1 is master
+	out	#0x21,al
+	.word	0x00eb,0x00eb
+	mov	al,#0x02		! 8259-2 is slave
+	out	#0xA1,al
+	.word	0x00eb,0x00eb
+	! ----ICW4
+	mov	al,#0x01		! 8086 mode for both
+	out	#0x21,al
+	.word	0x00eb,0x00eb
+	out	#0xA1,al
+	.word	0x00eb,0x00eb
+
+	mov	al,#0xFF		! mask off all interrupts for now
+	out	#0x21,al
+	.word	0x00eb,0x00eb
+	out	#0xA1,al
+```
+
+将CPU工作方式设为保护模式，将CR0寄存器第0位(PE)置为1，置1表示CPU工作在保护模式下，置0表示实模式
+
+```assembly
+mov	ax,#0x0001	! protected mode (PE) bit     //将cpu的工作方式设为保护模式，第0位为PE标志，置1时CPU工作在保护模式下，置0时为实模式
+lmsw	ax		! This is it! lmsw指令仅仅加载CR0的低4位，由低到高分别是PE，MP，EM，TS
+jmpi	0,8		! jmp offset 0 of segment 8 (cs)
+```
+
+这里重点讲一下 jmpi 0,8：
+
+0表示段内偏移，8是保护模式下的段选择子，理解为二进制的1000。
+
+1000的位0-1:表示内核特权级，Linux操作系统只用到两级——0级（内核级）和3级（用户级）。位2:0表示GDT，如果是1，则表示LDT。位3-15是描述符表项的索引，指出选择第几项描述符。
+
+所以段选择子8(= 0000_0000_0000_1000b)表示请求特权级0、使用全局描述符表GDT中第1个段描述符项，该项是一个代码段描述符，指出代码段的基地址是0，又因为偏移值是0，所以这个跳转指令会跳转到0地址，即运行system模块。
